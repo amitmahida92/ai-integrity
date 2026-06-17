@@ -10,6 +10,7 @@ class Settings(BaseSettings):
         "postgresql+psycopg://ai_integrity:ai_integrity@localhost:5433/ai_integrity"
     )
     debug_sync_tools_enabled: bool = False
+    demo_failure_injection_enabled: bool = False
     database_pool_pre_ping: bool = True
     hubspot_access_token: str | None = None
     google_calendar_access_token: str | None = None

@@ -51,6 +51,46 @@ class NormalizedRecordRepository:
         )
         return list(self.session.execute(statement).scalars())
 
+    def list_records(
+        self,
+        *,
+        provider: str | None = None,
+        entity_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[NormalizedRecord]:
+        bounded_limit = max(1, min(limit, 100))
+        bounded_offset = max(0, offset)
+        statement = select(NormalizedRecord)
+        if provider is not None:
+            statement = statement.where(NormalizedRecord.provider == provider)
+        if entity_type is not None:
+            statement = statement.where(NormalizedRecord.entity_type == entity_type)
+        statement = (
+            statement.order_by(
+                desc(NormalizedRecord.source_updated_at).nullslast(),
+                desc(NormalizedRecord.last_seen_at),
+            )
+            .offset(bounded_offset)
+            .limit(bounded_limit)
+        )
+        return list(self.session.execute(statement).scalars())
+
+    def count_groups(self) -> list[tuple[str, str, int]]:
+        statement = (
+            select(
+                NormalizedRecord.provider,
+                NormalizedRecord.entity_type,
+                func.count().label("record_count"),
+            )
+            .group_by(NormalizedRecord.provider, NormalizedRecord.entity_type)
+            .order_by(NormalizedRecord.provider, NormalizedRecord.entity_type)
+        )
+        return [
+            (provider, entity_type, int(record_count))
+            for provider, entity_type, record_count in self.session.execute(statement).all()
+        ]
+
     def upsert(self, record: NormalizedRecordInput) -> NormalizedRecord:
         seen_at = datetime.now(UTC)
         statement = insert(NormalizedRecord).values(

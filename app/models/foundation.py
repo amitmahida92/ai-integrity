@@ -185,6 +185,12 @@ class SyncSourceResult(Base):
         default=0,
         server_default=text("0"),
     )
+    records_rejected: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     pages_fetched: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
