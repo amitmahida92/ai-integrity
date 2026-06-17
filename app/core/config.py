@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     )
     debug_sync_tools_enabled: bool = False
     database_pool_pre_ping: bool = True
+    hubspot_access_token: str | None = None
+    google_calendar_access_token: str | None = None
+    google_calendar_api_key: str | None = None
+    stripe_secret_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
