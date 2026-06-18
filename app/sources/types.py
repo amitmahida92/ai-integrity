@@ -9,7 +9,7 @@ EffectiveMode = Literal["full", "incremental", "recovery_full"]
 
 @dataclass(frozen=True)
 class ProviderPage:
-    items: list[dict[str, Any]]
+    items: list[Any]
     next_cursor: str | None = None
     next_sync_token: str | None = None
     has_more: bool = False

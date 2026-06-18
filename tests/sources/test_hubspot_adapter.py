@@ -32,6 +32,7 @@ def test_hubspot_full_fetch_paginates_normalizes_rejects_and_checkpoints() -> No
                     items=[
                         contact("contact-1", "2026-06-17T12:00:00Z"),
                         {"id": "bad-contact", "properties": {"email": "bad@example.com"}},
+                        "not-a-contact",
                     ],
                     next_cursor="cursor-2",
                 )
@@ -56,8 +57,8 @@ def test_hubspot_full_fetch_paginates_normalizes_rejects_and_checkpoints() -> No
 
     assert client.calls == [None, "cursor-2"]
     assert result.pages_fetched == 2
-    assert result.records_fetched == 3
-    assert result.rejected_records == 1
+    assert result.records_fetched == 4
+    assert result.rejected_records == 2
     assert [record.external_id for record in result.records] == ["contact-1", "contact-2"]
     assert result.records[0].canonical_data["email"] == "contact-1@example.com"
     assert result.records[0].raw_payload["id"] == "contact-1"

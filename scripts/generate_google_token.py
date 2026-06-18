@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -27,6 +28,20 @@ credentials = flow.run_local_server(
     prompt="consent",
 )
 
+env_path = Path(".env")
+env_lines = env_path.read_text().splitlines() if env_path.exists() else []
+updated_lines: list[str] = []
+found_refresh_token = False
+for line in env_lines:
+    if line.startswith("GOOGLE_REFRESH_TOKEN="):
+        updated_lines.append(f"GOOGLE_REFRESH_TOKEN={credentials.refresh_token}")
+        found_refresh_token = True
+    else:
+        updated_lines.append(line)
+if not found_refresh_token:
+    updated_lines.append(f"GOOGLE_REFRESH_TOKEN={credentials.refresh_token}")
+
+env_path.write_text("\n".join(updated_lines) + "\n")
+
 print("\nRefresh token generated successfully.")
-print("Copy this value into GOOGLE_REFRESH_TOKEN in your .env:\n")
-print(credentials.refresh_token)
+print("GOOGLE_REFRESH_TOKEN was written to .env and was not printed.")

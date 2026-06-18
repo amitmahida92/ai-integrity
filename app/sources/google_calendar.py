@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import quote
 
@@ -38,6 +38,7 @@ class GoogleCalendarEventsClient(Protocol):
 @dataclass(frozen=True)
 class GoogleCalendarEventsAdapter:
     client: GoogleCalendarEventsClient
+    default_calendar_id: str = DEFAULT_CALENDAR_ID
     retry_policy: RetryPolicy = RetryPolicy()
     now: Callable[[], datetime] = utc_now
     sleep: Callable[[float], None] = lambda _: None
@@ -49,7 +50,7 @@ class GoogleCalendarEventsAdapter:
         effective_mode: str = "full",
     ) -> FetchResult:
         started_at = self.now()
-        calendar_id = str((checkpoint_data or {}).get("calendar_id") or DEFAULT_CALENDAR_ID)
+        calendar_id = str((checkpoint_data or {}).get("calendar_id") or self.default_calendar_id)
         return self._fetch_pages(
             calendar_id=calendar_id,
             sync_token=None,
@@ -62,7 +63,7 @@ class GoogleCalendarEventsAdapter:
         if not sync_token:
             return self.fetch_full(checkpoint_data)
 
-        calendar_id = str(checkpoint_data.get("calendar_id") or DEFAULT_CALENDAR_ID)
+        calendar_id = str(checkpoint_data.get("calendar_id") or self.default_calendar_id)
         started_at = self.now()
         try:
             return self._fetch_pages(
@@ -103,6 +104,9 @@ class GoogleCalendarEventsAdapter:
             records_fetched += len(page.items)
 
             for raw_event in page.items:
+                if not isinstance(raw_event, dict):
+                    rejected_records += 1
+                    continue
                 try:
                     records.append(normalize_google_event(raw_event, calendar_id=calendar_id))
                 except RecordRejectedError:
@@ -182,14 +186,20 @@ class GoogleCalendarHttpClient:
     def __init__(
         self,
         *,
-        access_token: str | None = None,
-        api_key: str | None = None,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
         base_url: str = "https://www.googleapis.com/calendar/v3",
+        token_url: str = "https://oauth2.googleapis.com/token",
         timeout_seconds: float = 10.0,
         http_client: httpx.Client | None = None,
     ) -> None:
-        self._access_token = access_token
-        self._api_key = api_key
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._refresh_token = refresh_token
+        self._access_token: str | None = None
+        self._access_token_expires_at: datetime | None = None
+        self._token_url = token_url
         self._client = http_client or httpx.Client(base_url=base_url, timeout=timeout_seconds)
 
     def fetch_events_page(
@@ -204,9 +214,6 @@ class GoogleCalendarHttpClient:
             params["pageToken"] = page_token
         if sync_token is not None:
             params["syncToken"] = sync_token
-        if self._api_key:
-            params["key"] = self._api_key
-
         data = self._request_json(
             "GET",
             f"/calendars/{quote(calendar_id, safe='')}/events",
@@ -216,17 +223,18 @@ class GoogleCalendarHttpClient:
         if not isinstance(items, list):
             raise ProviderResponseError("Google Calendar page is missing items list")
         return ProviderPage(
-            items=[item for item in items if isinstance(item, dict)],
+            items=items,
             next_cursor=data.get("nextPageToken"),
             next_sync_token=data.get("nextSyncToken"),
         )
 
     def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        headers = {}
-        if self._access_token:
-            headers["Authorization"] = f"Bearer {self._access_token}"
         try:
-            response = self._client.request(method, path, headers=headers, **kwargs)
+            response = self._send_authorized_request(method, path, **kwargs)
+            if response.status_code == 401:
+                self._access_token = None
+                self._access_token_expires_at = None
+                response = self._send_authorized_request(method, path, **kwargs)
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError("Google Calendar request timed out") from exc
         except httpx.HTTPError as exc:
@@ -253,6 +261,60 @@ class GoogleCalendarHttpClient:
         if not isinstance(data, dict):
             raise ProviderResponseError("Google Calendar response JSON must be an object")
         return data
+
+    def _send_authorized_request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        return self._client.request(
+            method,
+            path,
+            headers={"Authorization": f"Bearer {self._get_access_token()}"},
+            **kwargs,
+        )
+
+    def _get_access_token(self) -> str:
+        if self._access_token and self._access_token_expires_at:
+            if self._access_token_expires_at > datetime.now(UTC) + timedelta(seconds=60):
+                return self._access_token
+
+        try:
+            response = self._client.post(
+                self._token_url,
+                data={
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "refresh_token": self._refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError("Google OAuth token refresh timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderTransientError("Google OAuth token refresh failed") from exc
+
+        if response.status_code >= 400:
+            raise ProviderResponseError("Google OAuth token refresh failed")
+
+        try:
+            token_data = response.json()
+        except ValueError as exc:
+            raise ProviderResponseError("Google OAuth token response was not valid JSON") from exc
+        if not isinstance(token_data, dict):
+            raise ProviderResponseError("Google OAuth token response JSON must be an object")
+
+        access_token = token_data.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise ProviderResponseError("Google OAuth token response did not include access_token")
+
+        expires_in = token_data.get("expires_in", 3600)
+        if not isinstance(expires_in, int):
+            expires_in = 3600
+        self._access_token = access_token
+        self._access_token_expires_at = datetime.now(UTC) + timedelta(seconds=max(expires_in, 0))
+        return access_token
 
 
 def _retry_after(response: httpx.Response) -> float | None:

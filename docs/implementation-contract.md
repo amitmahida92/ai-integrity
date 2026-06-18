@@ -18,7 +18,7 @@ The system must support:
 * persisted sync-run history
 * debug failure injection for demonstration
 
-Do not add workers, queues, Redis, outbox, DLQ, HubSpot Deals, Stripe Invoices, cross-source identity resolution or production-scale OAuth.
+Do not add workers, queues, Redis, outbox, DLQ, HubSpot Deals, Stripe Invoices, cross-source identity resolution, multi-tenant OAuth or user-consent OAuth flows. The deployed Google Calendar runtime uses one configured refresh token for the seeded demo calendar.
 
 ---
 
@@ -26,91 +26,43 @@ Do not add workers, queues, Redis, outbox, DLQ, HubSpot Deals, Stripe Invoices, 
 
 Use UUID primary keys, timezone-aware timestamps and PostgreSQL JSONB.
 
-### `hubspot_contacts`
+### `normalized_records`
+
+All provider payloads are stored in one normalized table. This is intentional: the assignment asks for one normalized schema, and provider-specific detail is represented with `provider`, `entity_type`, `canonical_data` and `raw_payload` instead of separate provider tables.
 
 Required columns:
 
 * `id`
+* `provider`
+* `entity_type`
 * `external_id`
-* `email`
-* `first_name`
-* `last_name`
-* `phone`
-* `provider_updated_at`
+* `source_updated_at`
+* `canonical_data`
 * `raw_payload`
-* `created_at`
-* `updated_at`
+* `payload_hash`
+* `first_seen_at`
+* `last_seen_at`
 
 Constraint:
 
 ```text
-UNIQUE(external_id)
+UNIQUE(provider, entity_type, external_id)
 ```
 
-Upsert key:
+Entity types:
 
 ```text
-external_id
+hubspot/contact
+google_calendar/calendar_event
+stripe/payment_intent
 ```
 
----
+Canonical data requirements:
 
-### `google_calendar_events`
-
-Required columns:
-
-* `id`
-* `calendar_id`
-* `external_id`
-* `title`
-* `description`
-* `status`
-* `start_at`
-* `end_at`
-* `is_deleted`
-* `provider_updated_at`
-* `raw_payload`
-* `created_at`
-* `updated_at`
-
-Constraint:
-
-```text
-UNIQUE(calendar_id, external_id)
-```
-
-Canceled/deleted Google events must be stored as tombstones:
-
-```text
-is_deleted = true
-```
-
----
-
-### `stripe_payment_intents`
-
-Required columns:
-
-* `id`
-* `external_id`
-* `amount`
-* `amount_received`
-* `currency`
-* `status`
-* `customer_id`
-* `provider_created_at`
-* `last_event_created_at`
-* `raw_payload`
-* `created_at`
-* `updated_at`
-
-Constraint:
-
-```text
-UNIQUE(external_id)
-```
-
-Amounts must remain in Stripe minor units. Do not convert cents into decimal currency values during ingestion.
+* HubSpot contacts store email, first name, last name, phone and provider-updated timestamp.
+* Google Calendar events store calendar id, provider event id, title, description, status, start/end and `is_deleted`. Canceled/deleted Google events must be stored as tombstones with `is_deleted = true`.
+* Stripe PaymentIntents store amount fields in Stripe minor units, currency, status, customer id, provider-created timestamp and latest relevant event timestamp. Do not convert cents into decimal currency values during ingestion.
+* `raw_payload` preserves the source object, or the source event plus retrieved current object where Stripe incremental sync uses events.
 
 ---
 
@@ -119,7 +71,7 @@ Amounts must remain in Stripe minor units. Do not convert cents into decimal cur
 Required columns:
 
 * `id`
-* `source`
+* `provider`
 * `checkpoint_data`
 * `created_at`
 * `updated_at`
@@ -127,10 +79,10 @@ Required columns:
 Constraint:
 
 ```text
-UNIQUE(source)
+UNIQUE(provider)
 ```
 
-Allowed source values:
+Allowed provider values:
 
 ```text
 hubspot
@@ -172,7 +124,7 @@ Status rules:
 
 ---
 
-### `sync_source_runs`
+### `sync_source_results`
 
 Represents one provider execution within a sync run.
 
@@ -180,12 +132,13 @@ Required columns:
 
 * `id`
 * `sync_run_id`
-* `source`
+* `provider`
 * `requested_mode`
 * `effective_mode`
 * `status`
 * `records_fetched`
 * `records_upserted`
+* `records_rejected`
 * `pages_fetched`
 * `checkpoint_before`
 * `checkpoint_after`
@@ -213,7 +166,7 @@ failed
 Relationship:
 
 ```text
-sync_source_runs.sync_run_id → sync_runs.id
+sync_source_results.sync_run_id → sync_runs.id
 ```
 
 No additional database tables are required.
@@ -222,20 +175,24 @@ No additional database tables are required.
 
 ## 2. Required endpoints
 
-All API routes should use an `/api/v1` prefix.
+All sync and record routes should use an `/api/v1` prefix.
 
 ### Health check
 
 ```http
-GET /healthz
+GET /health
+GET /ready
 ```
 
-Response:
+`/health` verifies database connectivity. `/ready` verifies database connectivity and required table existence.
+
+Example `/ready` response:
 
 ```json
 {
-  "status": "ok",
-  "database": "reachable"
+  "status": "ready",
+  "database": "reachable",
+  "tables": "ready"
 }
 ```
 
@@ -244,7 +201,8 @@ Response:
 ### Trigger a synchronous sync run
 
 ```http
-POST /api/v1/sync-runs
+POST /api/v1/sync
+POST /api/v1/sync/{provider}
 ```
 
 Request:
@@ -252,7 +210,7 @@ Request:
 ```json
 {
   "mode": "incremental",
-  "sources": [
+  "providers": [
     "hubspot",
     "google_calendar",
     "stripe"
@@ -267,10 +225,10 @@ Request:
 Rules:
 
 * `mode` must be `full` or `incremental`.
-* `sources` must contain one or more supported sources.
-* Sources execute independently.
-* A failed source must not prevent later sources from running.
-* The HTTP request remains open until all requested sources finish.
+* `providers` must contain one or more supported providers when supplied. If omitted, all providers run.
+* Providers execute independently.
+* A failed provider must not prevent later providers from running.
+* The HTTP request remains open until all requested providers finish.
 * Return the persisted run summary.
 * A partially failed run still returns HTTP `200`.
 * Invalid input returns HTTP `422`.
@@ -281,26 +239,31 @@ Example response:
 {
   "id": "uuid",
   "requested_mode": "incremental",
-  "status": "completed_with_errors",
-  "sources": [
+  "requested_providers": [
+    "hubspot",
+    "google_calendar",
+    "stripe"
+  ],
+  "status": "partial_success",
+  "provider_results": [
     {
-      "source": "hubspot",
+      "provider": "hubspot",
       "effective_mode": "incremental",
       "status": "failed",
-      "records_upserted": 0,
+      "upserted_count": 0,
       "error_type": "InjectedFailure"
     },
     {
-      "source": "google_calendar",
+      "provider": "google_calendar",
       "effective_mode": "incremental",
-      "status": "succeeded",
-      "records_upserted": 2
+      "status": "success",
+      "upserted_count": 2
     },
     {
-      "source": "stripe",
+      "provider": "stripe",
       "effective_mode": "incremental",
-      "status": "succeeded",
-      "records_upserted": 1
+      "status": "success",
+      "upserted_count": 1
     }
   ]
 }
@@ -312,7 +275,7 @@ Debug options must only work when:
 DEBUG_SYNC_TOOLS_ENABLED=true
 ```
 
-`fail_source` must throw a controlled exception inside the selected source before its database transaction commits.
+`fail_source` / `fail_provider` must throw a controlled exception inside the selected provider before its database transaction commits.
 
 `stale_google_cursor=true` must replace the current Google sync token in memory with an invalid token for that execution, causing the actual stale-token recovery path to run.
 
@@ -338,24 +301,11 @@ Return newest runs first.
 
 ---
 
-### Inspect checkpoints
-
-```http
-GET /api/v1/sync-checkpoints
-```
-
-Return the current checkpoint for each provider.
-
-Do not expose provider access tokens or OAuth credentials.
-
----
-
 ### Inspect normalized data
 
 ```http
-GET /api/v1/contacts
-GET /api/v1/calendar-events
-GET /api/v1/payment-intents
+GET /api/v1/records
+GET /api/v1/records/counts
 ```
 
 Requirements:
@@ -365,6 +315,8 @@ Requirements:
 * newest provider-updated records first
 * sufficient fields must be returned to demonstrate normalization
 * raw payload may be excluded from list responses
+* `/api/v1/records` may be filtered with `provider` and `entity_type`
+* `/api/v1/records/counts` returns total and per-provider/entity counts
 
 No create, update or delete endpoints are required for normalized records.
 
@@ -419,6 +371,20 @@ After success, persist the maximum provider update timestamp observed. When no c
 ---
 
 ### Google Calendar Events
+
+Runtime configuration:
+
+```text
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+GOOGLE_REFRESH_TOKEN
+GOOGLE_CALENDAR_ID
+```
+
+The Google Calendar HTTP client must exchange the configured refresh token for
+an access token before Calendar API calls. Do not rely on static
+`GOOGLE_CALENDAR_ACCESS_TOKEN` or `GOOGLE_CALENDAR_API_KEY` values for private
+calendar data, and do not print or log Google secrets or tokens.
 
 Checkpoint shape:
 
@@ -558,7 +524,7 @@ The following must commit atomically for each source:
 
 * normalized record upserts
 * checkpoint update
-* successful `sync_source_runs` result
+* successful `sync_source_results` result
 
 If an upsert or checkpoint update fails:
 
@@ -770,14 +736,14 @@ all failed → failed
 After deployment to Render, verify:
 
 ```text
-GET /healthz
-POST /api/v1/sync-runs with mode=full
-POST /api/v1/sync-runs with mode=incremental
+GET /health
+GET /ready
+POST /api/v1/sync with mode=full
+POST /api/v1/sync with mode=incremental
 GET /api/v1/sync-runs/{id}
-GET /api/v1/sync-checkpoints
-GET /api/v1/contacts
-GET /api/v1/calendar-events
-GET /api/v1/payment-intents
+GET /api/v1/sync-runs
+GET /api/v1/records
+GET /api/v1/records/counts
 ```
 
 ---
@@ -812,7 +778,7 @@ Mention:
 Trigger:
 
 ```http
-POST /api/v1/sync-runs
+POST /api/v1/sync
 ```
 
 with:
@@ -820,7 +786,7 @@ with:
 ```json
 {
   "mode": "full",
-  "sources": [
+  "providers": [
     "hubspot",
     "google_calendar",
     "stripe"
@@ -831,11 +797,9 @@ with:
 Show:
 
 * overall status `succeeded`
-* all three source results
+* all three provider results
 * fetched/upserted counts
-* normalized contacts
-* normalized calendar events
-* normalized PaymentIntents
+* normalized contact, calendar event and PaymentIntent rows in `normalized_records`
 * stored checkpoints
 
 ---

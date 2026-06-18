@@ -81,6 +81,9 @@ class StripePaymentIntentsAdapter:
             records_fetched += len(page.items)
 
             for raw_payment_intent in page.items:
+                if not isinstance(raw_payment_intent, dict):
+                    rejected_records += 1
+                    continue
                 try:
                     records.append(normalize_payment_intent(raw_payment_intent))
                 except RecordRejectedError:
@@ -138,6 +141,9 @@ class StripePaymentIntentsAdapter:
             events_fetched += len(page.items)
 
             for raw_event in page.items:
+                if not isinstance(raw_event, dict):
+                    rejected_records += 1
+                    continue
                 if raw_event.get("id"):
                     last_event_id = str(raw_event["id"])
                 if raw_event.get("type") not in PAYMENT_INTENT_EVENT_TYPES:
@@ -276,11 +282,14 @@ def _checkpoint_watermark(checkpoint_data: dict[str, Any]) -> datetime | None:
         raise ProviderResponseError("Stripe checkpoint event_watermark is invalid") from exc
 
 
-def _last_item_id(items: list[dict[str, Any]]) -> str | None:
-    if not items:
-        return None
-    value = items[-1].get("id")
-    return str(value) if value is not None else None
+def _last_item_id(items: list[Any]) -> str | None:
+    for item in reversed(items):
+        if not isinstance(item, dict):
+            continue
+        value = item.get("id")
+        if value is not None:
+            return str(value)
+    return None
 
 
 class StripeHttpClient:
@@ -362,7 +371,7 @@ def _stripe_list_page_from_response(data: dict[str, Any]) -> ProviderPage:
         raise ProviderResponseError("Stripe list response is missing data list")
     has_more = bool(data.get("has_more"))
     return ProviderPage(
-        items=[item for item in items if isinstance(item, dict)],
+        items=items,
         has_more=has_more,
         next_cursor=_last_item_id(items) if has_more else None,
     )

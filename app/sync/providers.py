@@ -40,15 +40,19 @@ class HttpProviderAdapterFactory:
 
         if provider == ProviderName.GOOGLE_CALENDAR.value:
             if (
-                not self.settings.google_calendar_access_token
-                and not self.settings.google_calendar_api_key
+                not self.settings.google_client_id
+                or not self.settings.google_client_secret
+                or not self.settings.google_refresh_token
+                or not self.settings.google_calendar_id
             ):
                 raise ProviderClientError("Google Calendar credentials are not configured")
             return GoogleCalendarEventsAdapter(
                 client=GoogleCalendarHttpClient(
-                    access_token=self.settings.google_calendar_access_token,
-                    api_key=self.settings.google_calendar_api_key,
-                )
+                    client_id=self.settings.google_client_id,
+                    client_secret=self.settings.google_client_secret,
+                    refresh_token=self.settings.google_refresh_token,
+                ),
+                default_calendar_id=self.settings.google_calendar_id,
             )
 
         if provider == ProviderName.STRIPE.value:

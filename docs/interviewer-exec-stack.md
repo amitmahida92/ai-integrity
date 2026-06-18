@@ -69,7 +69,6 @@ Local runtime pieces:
 Health and readiness:
 
 - `GET /health`
-- `GET /healthz`
 - `GET /ready`
 
 Sync API:
@@ -305,15 +304,14 @@ The seven focused acceptance tests prove:
 Latest verification:
 
 ```text
-docker compose run --rm api alembic upgrade head
-docker compose run --rm api ruff check .
-docker compose run --rm api pytest
+python -m ruff check .
+python -m pytest -v
 ```
 
 Result:
 
 ```text
-32 passed, 1 warning
+36 passed, 1 warning
 ```
 
 The warning is an upstream FastAPI/Starlette `TestClient` deprecation warning
@@ -327,17 +325,13 @@ Start PostgreSQL:
 docker compose up -d db
 ```
 
-Apply migrations:
-
-```bash
-docker compose run --rm api alembic upgrade head
-```
-
 Start the API:
 
 ```bash
 docker compose up api
 ```
+
+The API container runs `alembic upgrade head` before starting Uvicorn.
 
 Health checks:
 
@@ -401,6 +395,7 @@ Suggested narrative:
 ## Known Limits
 
 - Live provider credential flows are intentionally minimal for the assignment.
+  Google Calendar uses one configured refresh token for the seeded calendar.
 - Automated tests use mocked provider clients for deterministic behavior.
 - No background scheduling or async worker model is included.
 - No production OAuth UI is included.

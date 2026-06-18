@@ -108,6 +108,9 @@ class HubSpotContactsAdapter:
             records_fetched += len(page.items)
 
             for raw_contact in page.items:
+                if not isinstance(raw_contact, dict):
+                    rejected_records += 1
+                    continue
                 try:
                     records.append(normalize_hubspot_contact(raw_contact))
                 except RecordRejectedError:
@@ -292,7 +295,7 @@ def _hubspot_page_from_response(data: dict[str, Any]) -> ProviderPage:
         if isinstance(next_data, dict):
             next_cursor = next_data.get("after")
     return ProviderPage(
-        items=[item for item in results if isinstance(item, dict)],
+        items=results,
         next_cursor=next_cursor,
     )
 
