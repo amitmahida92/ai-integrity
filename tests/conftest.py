@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from app.core.config import get_settings
+from app.db.url import normalize_database_url
 
 
 @pytest.fixture(scope="session")
 def database_url() -> str:
     url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or get_settings().database_url
+    url = normalize_database_url(url)
     if url.startswith("sqlite"):
         pytest.fail("Repository tests must run against PostgreSQL, not SQLite.")
     return url
