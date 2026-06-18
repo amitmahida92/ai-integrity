@@ -1,143 +1,335 @@
 # ai-integrity
 
-Problem Statement 1 foundation for a synchronous data sync API. The project is intentionally
-small: FastAPI, SQLAlchemy 2, Alembic, PostgreSQL, Pydantic Settings, Pytest, Ruff, and Docker
-Compose for local PostgreSQL.
+Problem Statement 1 implementation: a synchronous FastAPI ingestion service that
+syncs HubSpot Contacts, Google Calendar Events, and Stripe PaymentIntents into
+one normalized PostgreSQL schema.
 
-This pass does not implement workers, queues, Redis, an outbox, DLQ, webhooks, auth UI, or Problem
-Statement 2 metrics.
+This repository intentionally does not implement Problem Statement 2. It also
+does not add workers, Redis, queues, cron, webhooks, provider-specific tables,
+auth UI, or broad production infrastructure outside the assignment scope.
 
-## Local setup
+Live Render URL: https://ai-integrity.onrender.com
 
-1. Copy environment defaults:
+## Architecture
 
-   ```bash
-   cp .env.example .env
-   ```
+- FastAPI exposes the sync, records, run-history, health, and readiness APIs.
+- SQLAlchemy 2 repositories persist normalized records, provider checkpoints,
+  sync-run history, and per-provider source results.
+- Alembic owns the PostgreSQL schema.
+- Provider adapters isolate HubSpot, Google Calendar, and Stripe API semantics
+  from orchestration and persistence.
+- The orchestrator runs requested providers sequentially inside one API request,
+  but each provider has independent error handling, checkpointing, and audit
+  result persistence.
+- Docker startup runs `alembic upgrade head` before Uvicorn. If migrations fail,
+  the container fails before serving traffic.
 
-2. Fill local provider credentials in `.env` when you want live provider calls:
+## Provider Scope
 
-   ```bash
-   HUBSPOT_ACCESS_TOKEN=...
-   GOOGLE_CLIENT_ID=...
-   GOOGLE_CLIENT_SECRET=...
-   GOOGLE_REFRESH_TOKEN=...
-   GOOGLE_CALENDAR_ID=...
-   STRIPE_SECRET_KEY=...
-   ```
+- HubSpot: Contacts
+- Google Calendar: Events from the configured `GOOGLE_CALENDAR_ID`
+- Stripe: PaymentIntents
 
-   The Google Calendar runtime uses the client id, client secret and refresh
-   token to obtain an access token before Calendar API calls. Do not use a
-   static Google access token or API key for private calendar data.
-   `scripts/generate_google_token.py` writes `GOOGLE_REFRESH_TOKEN` to ignored
-   `.env` without printing the token.
+## API Surface
 
-3. Start PostgreSQL:
+Protected `/api/v1` routes require:
 
-   ```bash
-   docker compose up -d db
-   ```
+```http
+Authorization: Bearer $ADMIN_API_KEY
+```
 
-   Compose maps Postgres to `localhost:5433` by default to avoid colliding with a local
-   Postgres on `5432`.
+Implemented routes used for the submission:
 
-4. Run the API:
+- `POST /api/v1/sync`
+- `GET /api/v1/records/counts`
+- `GET /api/v1/sync-runs`
+- `GET /health`
+- `GET /ready`
 
-   ```bash
-   docker compose up --build api
-   ```
+`/health` is lightweight and checks database reachability. `/ready` checks
+database reachability and required table existence.
 
-   The container runs `alembic upgrade head` before starting Uvicorn. If
-   migrations fail, startup fails.
+## Data Model
 
-5. Verify service health and readiness:
+The design uses one normalized table rather than provider-specific tables.
+Provider-specific details live in JSONB columns.
 
-   ```bash
-   curl http://localhost:8000/health
-   curl http://localhost:8000/ready
-   ```
+`normalized_records` columns:
 
-## Render deployment
+- `id`
+- `provider`
+- `entity_type`
+- `external_id`
+- `source_updated_at`
+- `canonical_data`
+- `raw_payload`
+- `payload_hash`
+- `first_seen_at`
+- `last_seen_at`
 
-Create a Render Web Service, connect this GitHub repository, and choose Docker
-deployment. Create or attach Render PostgreSQL, Supabase Postgres, or any hosted
-PostgreSQL database, then set `DATABASE_URL` using the SQLAlchemy psycopg driver
-form:
+Uniqueness:
 
 ```text
-postgresql+psycopg://USER:PASSWORD@HOST:PORT/DATABASE
+UNIQUE(provider, entity_type, external_id)
 ```
 
-Required Render environment variables:
+Entity types:
 
-```text
-APP_ENV=production
-DATABASE_URL=postgresql+psycopg://...
-ADMIN_API_KEY=...
-DEBUG_SYNC_TOOLS_ENABLED=false
-DEMO_FAILURE_INJECTION_ENABLED=true
-HUBSPOT_ACCESS_TOKEN=...
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-GOOGLE_REFRESH_TOKEN=...
-GOOGLE_CALENDAR_ID=...
-STRIPE_SECRET_KEY=...
-```
+- HubSpot: `provider=hubspot`, `entity_type=contact`
+- Google Calendar: `provider=google_calendar`, `entity_type=calendar_event`
+- Stripe: `provider=stripe`, `entity_type=payment_intent`
 
-Do not commit real secret values. Render supplies `PORT`. The Docker command
-binds Uvicorn to `0.0.0.0:${PORT:-8000}`, runs `alembic upgrade head` first,
-and exits without starting the API if migrations fail. `/health` stays
-lightweight; `/ready` checks that the database is reachable and that
-`normalized_records`, `sync_checkpoints`, `sync_runs` and `sync_source_results`
-exist. When `ADMIN_API_KEY` is set, `/api/v1` endpoints require either
-`Authorization: Bearer $ADMIN_API_KEY` or `X-Admin-API-Key: $ADMIN_API_KEY`;
-`/health` and `/ready` remain unauthenticated for Render health checks.
+Supporting tables:
 
-Deploy the service, then verify:
-
-```bash
-curl https://service-name.onrender.com/health
-curl https://service-name.onrender.com/ready
-curl -X POST https://service-name.onrender.com/api/v1/sync \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
-  -d '{"mode":"full"}'
-curl https://service-name.onrender.com/api/v1/records/counts \
-  -H "Authorization: Bearer $ADMIN_API_KEY"
-```
-
-For the repeatable live check, run:
-
-```bash
-./scripts/verify_render.sh https://service-name.onrender.com "$ADMIN_API_KEY"
-```
-
-## Verification
-
-Run linting and tests inside the Python 3.12 API image:
-
-```bash
-docker compose run --rm api ruff check .
-docker compose run --rm api pytest
-```
-
-The tests use PostgreSQL because JSONB and `INSERT ... ON CONFLICT DO UPDATE` behavior are part of
-the implementation contract.
-
-## Data model
-
-The foundation migration creates:
-
-- `normalized_records`
 - `sync_checkpoints`
 - `sync_runs`
 - `sync_source_results`
 
-`normalized_records` enforces uniqueness on `provider + entity_type + external_id`. Repository
-upserts keep repeated full syncs and incremental overlap windows idempotent, and older provider
-versions cannot overwrite newer canonical state.
+## Idempotency Strategy
 
-The normalized-record design is intentional. One table stores all synced
-entities with `provider`, `entity_type`, `external_id`, `canonical_data` and
-`raw_payload`; provider-specific facts live in `canonical_data` while the source
-object remains available in `raw_payload`.
+Writes use PostgreSQL `INSERT ... ON CONFLICT DO UPDATE` on
+`provider + entity_type + external_id`. Rerunning the same full or incremental
+sync updates the existing row instead of inserting duplicates.
+
+Rows keep both `canonical_data` and `raw_payload`. `source_updated_at` prevents
+older provider versions from overwriting newer stored state while still updating
+`last_seen_at` when a duplicate is observed again.
+
+## Checkpoint Strategy
+
+Checkpoints are stored per provider in `sync_checkpoints.checkpoint_data`.
+Provider records and checkpoint updates are committed together only after a
+provider succeeds. If persistence fails, the provider checkpoint is not advanced.
+
+- HubSpot full sync paginates Contacts and stores a `watermark` from the maximum
+  source update timestamp seen. Incremental sync searches contacts modified
+  since the saved watermark minus a 120-second overlap window.
+- Google Calendar full sync stores `calendar_id` and `nextSyncToken`.
+  Incremental sync uses the saved `sync_token`.
+- Stripe full sync paginates PaymentIntents and stores an `event_watermark`.
+  Incremental sync reads Stripe Events from the watermark minus a 120-second
+  overlap window, filters PaymentIntent event types, fetches current
+  PaymentIntent state, and upserts that current state.
+
+## Google Calendar 410 Fallback
+
+If Google Calendar returns HTTP `410` for a stale sync token, the adapter treats
+that as an expired cursor and runs a recovery full sync. The source result is
+recorded with `effective_mode=recovery_full`, replacement records are persisted,
+and the replacement `nextSyncToken` is checkpointed only after the recovery
+records are durably written.
+
+## Partial Failure Isolation
+
+Each provider has its own `sync_source_results` row. A provider failure is
+recorded for that provider and does not prevent later providers from running.
+
+Run status is derived from source results:
+
+- all providers succeed: `succeeded`
+- some providers fail: `completed_with_errors`
+- all requested providers fail: `failed`
+
+The public sync response maps those outcomes into the API response status while
+still returning HTTP `200` for a partially failed run.
+
+Malformed provider items are counted as rejected records and valid records on
+the same page continue processing.
+
+## Local Setup
+
+Copy the example environment file:
+
+```bash
+cp .env.example .env
+```
+
+Set local credentials in `.env` when making live provider calls:
+
+```bash
+APP_ENV=local
+DATABASE_URL=postgresql+psycopg://ai_integrity:ai_integrity@localhost:5433/ai_integrity
+ADMIN_API_KEY=
+DEMO_FAILURE_INJECTION_ENABLED=true
+HUBSPOT_ACCESS_TOKEN=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=
+GOOGLE_CALENDAR_ID=
+STRIPE_SECRET_KEY=
+```
+
+Start PostgreSQL:
+
+```bash
+docker compose up -d db
+```
+
+Run the API:
+
+```bash
+docker compose up --build api
+```
+
+Check health and readiness:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+```
+
+Run a full sync:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/sync \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"full"}'
+```
+
+Read counts and recent runs:
+
+```bash
+curl http://localhost:8000/api/v1/records/counts \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+
+curl http://localhost:8000/api/v1/sync-runs \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+```
+
+## Render Deployment
+
+1. Create a Render Web Service.
+2. Connect the GitHub repository.
+3. Choose Docker deployment.
+4. Create or attach Render PostgreSQL or another hosted PostgreSQL database.
+5. Set `DATABASE_URL` from the hosted database.
+6. Set the required provider credentials and admin key.
+7. Deploy.
+8. Verify `/health` and `/ready`.
+9. Run one full sync and inspect record counts.
+
+Required Render environment variables, without values:
+
+```bash
+APP_ENV=production
+DATABASE_URL=
+ADMIN_API_KEY=
+DEMO_FAILURE_INJECTION_ENABLED=true
+HUBSPOT_ACCESS_TOKEN=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=
+GOOGLE_CALENDAR_ID=
+STRIPE_SECRET_KEY=
+```
+
+Render supplies `PORT`. The Docker command binds Uvicorn to
+`0.0.0.0:${PORT:-8000}` after `alembic upgrade head` succeeds. Plain Render
+PostgreSQL URLs beginning with `postgresql://` are normalized by both the app
+runtime and Alembic to use the psycopg v3 SQLAlchemy driver.
+
+Health check path:
+
+```text
+/health
+```
+
+Readiness path:
+
+```text
+/ready
+```
+
+## Render Curl Examples
+
+Set:
+
+```bash
+BASE_URL=https://ai-integrity.onrender.com
+```
+
+Health and readiness:
+
+```bash
+curl "$BASE_URL/health"
+curl "$BASE_URL/ready"
+```
+
+Run a full sync:
+
+```bash
+curl -X POST "$BASE_URL/api/v1/sync" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"full"}'
+```
+
+Get record counts:
+
+```bash
+curl "$BASE_URL/api/v1/records/counts" \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+```
+
+List recent sync runs:
+
+```bash
+curl "$BASE_URL/api/v1/sync-runs" \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+```
+
+Repeatable verification script:
+
+```bash
+./scripts/verify_render.sh "$BASE_URL" "$ADMIN_API_KEY"
+```
+
+The script calls `/health`, `/ready`, runs a full sync, gets counts, runs the
+full sync again, gets counts again, and lists sync runs. It prints counts so
+idempotency is visible and does not print secret values.
+
+## Live Verification Evidence
+
+Evidence files are stored under `docs/evidence/`.
+
+Recorded live Render checks:
+
+- `/health`: `{"status":"ok","database":"reachable"}`
+- `/ready`: `{"status":"ready","database":"reachable","tables":"ready"}`
+- `POST /api/v1/sync` with `{"mode":"full"}` succeeded for all three providers.
+- Full-sync evidence: HubSpot fetched/upserted 5 contacts, Google Calendar
+  fetched/upserted 120 events, Stripe fetched/upserted 3 PaymentIntents.
+- `GET /api/v1/records/counts` returned total `128`:
+  - `google_calendar/calendar_event`: 120
+  - `hubspot/contact`: 5
+  - `stripe/payment_intent`: 3
+
+Local verification for the submission:
+
+```text
+python -m ruff check .    # passed
+python -m pytest -v       # 36 passed, 1 warning
+docker build              # passed
+```
+
+## Known Trade-offs
+
+- Sync is synchronous by design for Problem Statement 1; long provider calls keep
+  the API request open.
+- Providers run sequentially, not in parallel.
+- Google Calendar uses one configured refresh token for the seeded interview
+  calendar rather than a multi-user OAuth consent flow.
+- The schema intentionally uses one normalized record table rather than
+  provider-specific read models.
+- There are no webhooks, workers, queues, cron jobs, Redis, or Problem Statement
+  2 metrics.
+- The API stores raw provider payloads for review/debugging, but error summaries
+  are sanitized to avoid logging tokens, secrets, API keys, or bearer values.
+
+## AI Usage Disclosure
+
+AI assistance was used to draft implementation code, tests, documentation, and
+review checklists. The resulting behavior was verified with the repository's
+lint/test suite, Docker build, local database-backed tests, and live Render API
+checks captured in `docs/evidence/`.
