@@ -59,8 +59,10 @@ Statement 2 metrics.
 
 ## Render deployment
 
-Deploy the Docker image as a Render Web Service and point `DATABASE_URL` at the
-Supabase Postgres database using the SQLAlchemy psycopg driver form:
+Create a Render Web Service, connect this GitHub repository, and choose Docker
+deployment. Create or attach Render PostgreSQL, Supabase Postgres, or any hosted
+PostgreSQL database, then set `DATABASE_URL` using the SQLAlchemy psycopg driver
+form:
 
 ```text
 postgresql+psycopg://USER:PASSWORD@HOST:PORT/DATABASE
@@ -71,8 +73,9 @@ Required Render environment variables:
 ```text
 APP_ENV=production
 DATABASE_URL=postgresql+psycopg://...
+ADMIN_API_KEY=...
 DEBUG_SYNC_TOOLS_ENABLED=false
-DEMO_FAILURE_INJECTION_ENABLED=false
+DEMO_FAILURE_INJECTION_ENABLED=true
 HUBSPOT_ACCESS_TOKEN=...
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
@@ -81,11 +84,33 @@ GOOGLE_CALENDAR_ID=...
 STRIPE_SECRET_KEY=...
 ```
 
-Render supplies `PORT`. The Docker command binds Uvicorn to
-`0.0.0.0:${PORT:-8000}`, runs `alembic upgrade head` first, and exits without
-starting the API if migrations fail. `/ready` checks that the database is
-reachable and that `normalized_records`, `sync_checkpoints`, `sync_runs` and
-`sync_source_results` exist.
+Do not commit real secret values. Render supplies `PORT`. The Docker command
+binds Uvicorn to `0.0.0.0:${PORT:-8000}`, runs `alembic upgrade head` first,
+and exits without starting the API if migrations fail. `/health` stays
+lightweight; `/ready` checks that the database is reachable and that
+`normalized_records`, `sync_checkpoints`, `sync_runs` and `sync_source_results`
+exist. When `ADMIN_API_KEY` is set, `/api/v1` endpoints require either
+`Authorization: Bearer $ADMIN_API_KEY` or `X-Admin-API-Key: $ADMIN_API_KEY`;
+`/health` and `/ready` remain unauthenticated for Render health checks.
+
+Deploy the service, then verify:
+
+```bash
+curl https://service-name.onrender.com/health
+curl https://service-name.onrender.com/ready
+curl -X POST https://service-name.onrender.com/api/v1/sync \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -d '{"mode":"full"}'
+curl https://service-name.onrender.com/api/v1/records/counts \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+```
+
+For the repeatable live check, run:
+
+```bash
+./scripts/verify_render.sh https://service-name.onrender.com "$ADMIN_API_KEY"
+```
 
 ## Verification
 

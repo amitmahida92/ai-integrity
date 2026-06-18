@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.db.session import get_session
 from app.main import app
 from app.models import NormalizedRecord
@@ -255,6 +255,27 @@ def test_all_providers_failing_marks_run_failed(
         "failed",
         "failed",
     ]
+
+
+def test_admin_api_key_is_required_when_configured(
+    client_factory: Callable[[dict[str, Any], bool], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADMIN_API_KEY", "test-admin-key")
+    get_settings.cache_clear()
+    try:
+        client = client_factory(success_adapters())
+
+        assert client.post("/api/v1/sync", json={"mode": "full"}).status_code == 401
+        response = client.post(
+            "/api/v1/sync",
+            json={"mode": "full"},
+            headers={"X-Admin-API-Key": "test-admin-key"},
+        )
+
+        assert response.status_code == 200
+    finally:
+        get_settings.cache_clear()
 
 
 def test_invalid_provider_name_returns_validation_error(

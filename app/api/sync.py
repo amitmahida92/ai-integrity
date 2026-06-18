@@ -1,11 +1,13 @@
 from datetime import datetime
+from secrets import compare_digest
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.session import get_session
 from app.models import NormalizedRecord, SyncRun, SyncSourceResult
 from app.repositories.normalized_records import NormalizedRecordRepository
@@ -14,7 +16,30 @@ from app.sync.dependencies import get_sync_orchestrator
 from app.sync.errors import FailureInjectionDisabledError, ProviderLockConflictError
 from app.sync.orchestrator import DemoFailureOptions, SyncOrchestrator
 
-router = APIRouter(prefix="/api/v1", tags=["sync"])
+
+def require_admin_api_key(
+    authorization: Annotated[str | None, Header()] = None,
+    x_admin_api_key: Annotated[str | None, Header(alias="X-Admin-API-Key")] = None,
+) -> None:
+    expected_api_key = get_settings().admin_api_key
+    if not expected_api_key:
+        return
+
+    provided_api_key = x_admin_api_key
+    if provided_api_key is None and authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token:
+            provided_api_key = token
+
+    if provided_api_key is None or not compare_digest(provided_api_key, expected_api_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
+
+
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["sync"],
+    dependencies=[Depends(require_admin_api_key)],
+)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 SyncOrchestratorDep = Annotated[SyncOrchestrator, Depends(get_sync_orchestrator)]

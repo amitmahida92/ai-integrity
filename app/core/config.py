@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     debug_sync_tools_enabled: bool = False
     demo_failure_injection_enabled: bool = False
     database_pool_pre_ping: bool = True
+    admin_api_key: str | None = None
     hubspot_access_token: str | None = None
     google_client_id: str | None = None
     google_client_secret: str | None = None
