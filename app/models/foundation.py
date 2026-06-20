@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -209,3 +210,77 @@ class SyncSourceResult(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     sync_run: Mapped[SyncRun] = relationship(back_populates="source_results")
+
+
+class NormalizedFinancialRecord(Base):
+    __tablename__ = "normalized_financial_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_name",
+            "source_entity_type",
+            "external_id",
+            name="uq_normalized_financial_records_source_name_source_entity_type_external_id",
+        ),
+        Index("ix_normalized_financial_records_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(12), nullable=False)
+    raw_status: Mapped[str] = mapped_column(String(128), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    customer_reference: Mapped[str | None] = mapped_column(String(255))
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class RevenueStatusAllowlist(Base):
+    __tablename__ = "revenue_status_allowlist"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_name",
+            "source_entity_type",
+            "raw_status",
+            name="uq_revenue_status_allowlist_source_name_source_entity_type_raw_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_status: Mapped[str] = mapped_column(String(128), nullable=False)
+    canonical_status: Mapped[str] = mapped_column(String(128), nullable=False)
+    counts_as_collected: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

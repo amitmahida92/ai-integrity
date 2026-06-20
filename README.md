@@ -4,9 +4,11 @@ Problem Statement 1 implementation: a synchronous FastAPI ingestion service that
 syncs HubSpot Contacts, Google Calendar Events, and Stripe PaymentIntents into
 one normalized PostgreSQL schema.
 
-This repository intentionally does not implement Problem Statement 2. It also
-does not add workers, Redis, queues, cron, webhooks, provider-specific tables,
-auth UI, or broad production infrastructure outside the assignment scope.
+Problem Statement 2 adds one collected-revenue metric using normalized
+financial records and an explicit status allow-list. This repository does not
+add workers, Redis, queues, cron, webhooks, FX conversion, an accounting ledger,
+provider-specific tables, auth UI, or broad production infrastructure outside
+the assignment scope.
 
 Live Render URL: https://ai-integrity.onrender.com
 
@@ -43,6 +45,10 @@ Implemented routes used for the submission:
 - `POST /api/v1/sync`
 - `GET /api/v1/records/counts`
 - `GET /api/v1/sync-runs`
+- `POST /api/v1/problem-2/seed`
+- `POST /api/v1/problem-2/import-stripe`
+- `GET /api/v1/metrics/revenue/summary`
+- `GET /api/v1/metrics/revenue/breakdown`
 - `GET /health`
 - `GET /ready`
 
@@ -84,6 +90,42 @@ Supporting tables:
 - `sync_checkpoints`
 - `sync_runs`
 - `sync_source_results`
+
+Problem Statement 2 adds:
+
+`normalized_financial_records`:
+
+- `id`
+- `source_name`
+- `source_entity_type`
+- `external_id`
+- `amount_minor`
+- `currency`
+- `raw_status`
+- `occurred_at`
+- `customer_reference`
+- `raw_payload`
+- `created_at`
+- `updated_at`
+
+Uniqueness:
+
+```text
+UNIQUE(source_name, source_entity_type, external_id)
+```
+
+`revenue_status_allowlist`:
+
+- `id`
+- `source_name`
+- `source_entity_type`
+- `raw_status`
+- `canonical_status`
+- `counts_as_collected`
+- `created_at`
+
+Only statuses present in this allow-list with `counts_as_collected=true` are
+included in collected revenue.
 
 ## Idempotency Strategy
 
@@ -135,6 +177,57 @@ still returning HTTP `200` for a partially failed run.
 
 Malformed provider items are counted as rejected records and valid records on
 the same page continue processing.
+
+## Problem Statement 2: Collected Revenue
+
+Metric name: `collected_revenue`
+
+Metric version: `v1_allowlist`
+
+Definition:
+
+```sql
+SUM(normalized_financial_records.amount_minor)
+JOIN revenue_status_allowlist
+  ON source_name, source_entity_type, raw_status
+WHERE counts_as_collected = true
+  AND occurred_at >= from_date
+  AND occurred_at < to_date + 1 day
+GROUP BY currency
+```
+
+The implementation uses `RevenueMetricsService` as the single canonical place
+for the collected-revenue query. The summary endpoint and breakdown endpoint
+both call that service, so they expose the same aggregate number.
+
+Seeded allow-list rows:
+
+- `stripe/payment_intent/succeeded`
+- `mock_finance/invoice/paid`
+- `mock_finance/payment/completed`
+
+The seeded mock financial data includes paid, completed, pending, failed,
+voided, refunded, and unknown statuses. Only `paid` and `completed` count until
+another status is explicitly allow-listed.
+
+Endpoints:
+
+```bash
+curl -X POST "$BASE_URL/api/v1/problem-2/seed" \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+
+curl -X POST "$BASE_URL/api/v1/problem-2/import-stripe" \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+
+curl "$BASE_URL/api/v1/metrics/revenue/summary?from_date=2026-06-01&to_date=2026-06-30" \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+
+curl "$BASE_URL/api/v1/metrics/revenue/breakdown?from_date=2026-06-01&to_date=2026-06-30&grain=day" \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
+```
+
+The seed and Stripe import paths use PostgreSQL upserts, so reruns update the
+same source records instead of duplicating them.
 
 ## Local Setup
 
@@ -309,7 +402,7 @@ Local verification for the submission:
 
 ```text
 python -m ruff check .    # passed
-python -m pytest -v       # 36 passed, 1 warning
+python -m pytest -v       # 45 passed, 1 warning
 docker build              # passed
 ```
 
@@ -322,8 +415,8 @@ docker build              # passed
   calendar rather than a multi-user OAuth consent flow.
 - The schema intentionally uses one normalized record table rather than
   provider-specific read models.
-- There are no webhooks, workers, queues, cron jobs, Redis, or Problem Statement
-  2 metrics.
+- Problem Statement 2 does not implement FX conversion, refunds netting,
+  accounting ledger semantics, workers, queues, cron jobs, Redis, or webhooks.
 - The API stores raw provider payloads for review/debugging, but error summaries
   are sanitized to avoid logging tokens, secrets, API keys, or bearer values.
 

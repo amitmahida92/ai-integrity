@@ -41,7 +41,8 @@ def db_session(engine: Engine) -> Session:
         connection.execute(
             text(
                 "TRUNCATE sync_source_results, sync_runs, sync_checkpoints, "
-                "normalized_records RESTART IDENTITY CASCADE"
+                "normalized_records, normalized_financial_records, "
+                "revenue_status_allowlist RESTART IDENTITY CASCADE"
             )
         )
 

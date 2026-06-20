@@ -14,6 +14,8 @@ REQUIRED_TABLES = (
     "sync_checkpoints",
     "sync_runs",
     "sync_source_results",
+    "normalized_financial_records",
+    "revenue_status_allowlist",
 )
 
 
