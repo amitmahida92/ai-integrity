@@ -1,0 +1,59 @@
+{
+  "id": "36667d56-05e7-458e-811f-f684e71b2b62",
+  "requested_mode": "full",
+  "requested_providers": [
+    "hubspot",
+    "google_calendar",
+    "stripe"
+  ],
+  "status": "success",
+  "started_at": "2026-06-18T17:43:02.874612Z",
+  "completed_at": "2026-06-18T17:43:07.878896Z",
+  "provider_results": [
+    {
+      "provider": "hubspot",
+      "requested_mode": "full",
+      "effective_mode": "full",
+      "status": "success",
+      "fetched_count": 5,
+      "upserted_count": 5,
+      "rejected_count": 0,
+      "pages_fetched": 1,
+      "fallback_full_sync": false,
+      "started_at": "2026-06-18T17:43:02.885043Z",
+      "completed_at": "2026-06-18T17:43:03.974849Z",
+      "error_type": null,
+      "error_summary": null
+    },
+    {
+      "provider": "google_calendar",
+      "requested_mode": "full",
+      "effective_mode": "full",
+      "status": "success",
+      "fetched_count": 120,
+      "upserted_count": 120,
+      "rejected_count": 0,
+      "pages_fetched": 1,
+      "fallback_full_sync": false,
+      "started_at": "2026-06-18T17:43:03.986009Z",
+      "completed_at": "2026-06-18T17:43:07.288108Z",
+      "error_type": null,
+      "error_summary": null
+    },
+    {
+      "provider": "stripe",
+      "requested_mode": "full",
+      "effective_mode": "full",
+      "status": "success",
+      "fetched_count": 3,
+      "upserted_count": 3,
+      "rejected_count": 0,
+      "pages_fetched": 1,
+      "fallback_full_sync": false,
+      "started_at": "2026-06-18T17:43:07.295144Z",
+      "completed_at": "2026-06-18T17:43:07.792151Z",
+      "error_type": null,
+      "error_summary": null
+    }
+  ]
+}

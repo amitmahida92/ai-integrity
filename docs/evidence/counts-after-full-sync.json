@@ -1,0 +1,20 @@
+{
+  "total": 128,
+  "counts": [
+    {
+      "provider": "google_calendar",
+      "entity_type": "calendar_event",
+      "count": 120
+    },
+    {
+      "provider": "hubspot",
+      "entity_type": "contact",
+      "count": 5
+    },
+    {
+      "provider": "stripe",
+      "entity_type": "payment_intent",
+      "count": 3
+    }
+  ]
+}
