@@ -229,6 +229,42 @@ curl "$BASE_URL/api/v1/metrics/revenue/breakdown?from_date=2026-06-01&to_date=20
 The seed and Stripe import paths use PostgreSQL upserts, so reruns update the
 same source records instead of duplicating them.
 
+## Problem Statement 2 Demo
+
+Live demo command:
+
+```bash
+export BASE_URL=https://ai-integrity.onrender.com
+export ADMIN_API_KEY=...
+./scripts/demo_problem2_live.sh
+```
+
+The script calls:
+
+- `GET /health`
+- `GET /ready`
+- `POST /api/v1/problem-2/seed`
+- `POST /api/v1/problem-2/import-stripe`
+- `GET /api/v1/metrics/revenue/summary?from_date=2026-06-01&to_date=2026-06-30`
+- `GET /api/v1/metrics/revenue/breakdown?from_date=2026-06-01&to_date=2026-06-30&grain=day`
+
+Expected proof: `summary.totals_by_currency` equals
+`breakdown.aggregate_totals_by_currency` for the exact same date range. The
+seeded data includes pending, failed, voided, refunded, and unknown statuses,
+which are excluded because collected revenue is computed from an allow-list join
+rather than an exclusion list.
+
+Local verification placeholder:
+
+```text
+.venv/bin/python -m ruff check .  # passed
+.venv/bin/python -m pytest -v     # 45 passed, 1 warning
+```
+
+Trade-off: Stripe is the real test-mode finance source; mock finance is a
+deterministic second status vocabulary source used to demonstrate multi-source
+status mapping within the interview time.
+
 ## Local Setup
 
 Copy the example environment file:
